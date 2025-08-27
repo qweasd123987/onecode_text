@@ -1,0 +1,110 @@
+import requests
+import re
+import sqlite3
+import threading
+import queue
+import matplotlib.pyplot as plt
+from collections import Counter
+
+class WebCrawler:
+    def __init__(self, base_url, max_threads=5):
+        self.base_url = base_url
+        self.max_threads = max_threads
+        self.task_queue = queue.Queue()
+        self.results = []
+        self.lock = threading.Lock()
+        self.init_db()
+
+    def init_db(self):
+        """初始化 SQLite 数据库"""
+        conn = sqlite3.connect("crawler.db")
+        cur = conn.cursor()
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS pages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            url TEXT,
+            title TEXT
+        )
+        """)
+        conn.commit()
+        conn.close()
+
+    def save_to_db(self, url, title):
+        """保存结果到数据库"""
+        conn = sqlite3.connect("crawler.db")
+        cur = conn.cursor()
+        cur.execute("INSERT INTO pages (url, title) VALUES (?, ?)", (url, title))
+        conn.commit()
+        conn.close()
+
+    def fetch_page(self, url):
+        """获取网页 HTML"""
+        try:
+            resp = requests.get(url, timeout=5)
+            if resp.status_code == 200:
+                return resp.text
+        except Exception as e:
+            print(f"[Error] {url} -> {e}")
+        return None
+
+    def parse_title(self, html):
+        """正则提取网页标题"""
+        match = re.search(r"<title>(.*?)</title>", html, re.IGNORECASE)
+        return match.group(1) if match else "No Title"
+
+    def worker(self):
+        """工作线程"""
+        while not self.task_queue.empty():
+            url = self.task_queue.get()
+            html = self.fetch_page(url)
+            if html:
+                title = self.parse_title(html)
+                with self.lock:
+                    self.results.append((url, title))
+                    self.save_to_db(url, title)
+                    print(f"[OK] {url} -> {title}")
+            self.task_queue.task_done()
+
+    def run(self, urls):
+        """启动多线程爬虫"""
+        for url in urls:
+            self.task_queue.put(url)
+
+        threads = []
+        for _ in range(self.max_threads):
+            t = threading.Thread(target=self.worker)
+            t.start()
+            threads.append(t)
+
+        for t in threads:
+            t.join()
+
+    def analyze_titles(self):
+        """统计标题里高频单词并可视化"""
+        words = []
+        for _, title in self.results:
+            words.extend(title.split())
+
+        counter = Counter(words)
+        most_common = counter.most_common(10)
+
+        # 可视化
+        labels, values = zip(*most_common)
+        plt.bar(labels, values)
+        plt.xticks(rotation=45)
+        plt.title("Top 10 Words in Titles")
+        plt.show()
+
+
+if __name__ == "__main__":
+    urls = [
+        "https://www.python.org",
+        "https://www.wikipedia.org",
+        "https://www.github.com",
+        "https://www.stackoverflow.com",
+        "https://www.openai.com",
+    ]
+
+    crawler = WebCrawler(base_url="https://example.com", max_threads=3)
+    crawler.run(urls)
+    crawler.analyze_titles()
